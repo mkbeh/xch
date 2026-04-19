@@ -20,8 +20,8 @@ services:
     env_file:
       - ./.env.template
     ports:
-      - "8123:8123" # HTTP интерфейс
-      - "9001:9000" # TCP интерфейс
+      - "8123:8123" # HTTP
+      - "9001:9000" # TCP
     volumes:
       - ./scripts/init_clickhouse.sh:/docker-entrypoint-initdb.d/init_clickhouse.sh
       - ./configs/clickhouse01/config.xml:/etc/clickhouse-server/config.xml
@@ -37,8 +37,8 @@ services:
     env_file:
       - ./.env.template
     ports:
-      - "8124:8123" # HTTP интерфейс
-      - "9002:9000" # TCP интерфейс
+      - "8124:8123" # HTTP
+      - "9002:9000" # TCP
     volumes:
       - ./scripts/init_clickhouse.sh:/docker-entrypoint-initdb.d/init_clickhouse.sh
       - ./configs/clickhouse02/config.xml:/etc/clickhouse-server/config.xml
