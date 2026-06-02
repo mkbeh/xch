@@ -1,5 +1,8 @@
 # xclick
 
+![Go Version](https://img.shields.io/badge/go-1.26+-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+
 Go client for ClickHouse with migrations, query builder, and observability.
 
 Built on top of [clickhouse-go](https://github.com/ClickHouse/clickhouse-go).
