@@ -1,17 +1,27 @@
+<div align="center">
+
 # xclick
 
-![Go Version](https://img.shields.io/badge/go-1.26+-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
+**Lightweight ClickHouse wrapper for Go, built on top of [clickhouse-go](https://github.com/ClickHouse/clickhouse-go).**
 
-Go client for ClickHouse with migrations, query builder, and observability.
+![Go Version](https://img.shields.io/badge/go-1.26%2B-blue)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-Built on top of [clickhouse-go](https://github.com/ClickHouse/clickhouse-go).
+</div>
+
+`xclick` wraps the excellent [`clickhouse-go`](https://github.com/ClickHouse/clickhouse-go) client with a compact API
+for common ClickHouse workflows: connection pool initialization, query building, embedded SQL migrations, normalized
+errors, TLS and compression options, and Prometheus metrics.
 
 ## Features
 
-- **Query builder** — [squirrel](https://github.com/Masterminds/squirrel) with `$`-placeholder support out of the box
-- **Migrations** — via [golang-migrate](https://github.com/golang-migrate/migrate) using `embed.FS`
-- **Observability** — connection pool metrics exposed via Prometheus
+* **Pool**: Simple ClickHouse connection pool initialization.
+* **Queries**: ClickHouse-friendly query builder support.
+* **Migrations**: Embedded SQL migrations via [golang-migrate](https://github.com/golang-migrate/migrate).
+* **Observability**: Prometheus connection pool metrics out of the box.
+* **Errors**: Normalized ClickHouse error codes for common failure cases.
+* **Security**: TLS configuration and insecure-skip-verify support.
+* **Configuration**: Configure via Go structs or environment variables.
 
 ## Installation
 
@@ -19,8 +29,11 @@ Built on top of [clickhouse-go](https://github.com/ClickHouse/clickhouse-go).
 go get github.com/mkbeh/xclick
 ```
 
-## Quick start
+## Quick Start
 
+The example below creates a ClickHouse connection pool and runs a simple query.
+
+<!-- @formatter:off -->
 ```go
 package main
 
@@ -28,9 +41,13 @@ import (
 	"context"
 	"fmt"
 	"log"
+
+	clickhouse "github.com/mkbeh/xclick"
 )
 
 func main() {
+	ctx := context.Background()
+
 	cfg := &clickhouse.Config{
 		Hosts:    "127.0.0.1:9000",
 		User:     "user",
@@ -40,28 +57,55 @@ func main() {
 
 	pool, err := clickhouse.NewPool(
 		clickhouse.WithConfig(cfg),
-		clickhouse.WithClientID("my-service"),
+		clickhouse.WithClientID("my-service"), // used in metric labels
 	)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("failed to init ClickHouse pool: %v", err)
 	}
 	defer pool.Close()
 
 	var result string
-	if err := pool.QueryRow(context.Background(), "SELECT 'hello world'").Scan(&result); err != nil {
-		log.Fatal(err)
+	err = pool.QueryRow(ctx, "SELECT 'Hello, world!'").Scan(&result)
+	if err != nil {
+		log.Fatalf("query failed: %v", err)
 	}
 
 	fmt.Println(result)
 }
-
 ```
+<!-- @formatter:on -->
 
-More examples in [examples/](https://github.com/mkbeh/xclick/tree/main/examples).
+More examples: [examples/](https://github.com/mkbeh/xclick/tree/main/examples)
+
+## Query builder
+
+Each pool includes a preconfigured [squirrel](https://github.com/Masterminds/squirrel) statement builder.
+
+<!-- @formatter:off -->
+```go
+sql, args, err := pool.QueryBuilder().
+	Select("event_type", "count() AS total").
+	From("events").
+	Where(squirrel.Eq{"project_id": projectID}).
+	GroupBy("event_type").
+	ToSql()
+if err != nil {
+	log.Fatalf("failed to build query: %v", err)
+}
+
+rows, err := pool.Query(ctx, sql, args...)
+if err != nil {
+	log.Fatalf("failed to execute query: %v", err)
+}
+defer rows.Close()
+```
+<!-- @formatter:on -->
 
 ## Migrations
 
-Create an `embed.go` file in your migrations directory:
+`xclick` supports embedded SQL migrations through [golang-migrate](https://github.com/golang-migrate/migrate).
+
+Create `embed.go` in your migrations package:
 
 ```go
 package migrations
@@ -72,67 +116,156 @@ import "embed"
 var FS embed.FS
 ```
 
-Pass `FS` via `WithMigrations`:
+Pass the embedded filesystem via `WithMigrations`:
 
+<!-- @formatter:off -->
 ```go
 pool, err := clickhouse.NewPool(
-    clickhouse.WithConfig(cfg),
-    clickhouse.WithMigrations(migrations.FS),
+	clickhouse.WithConfig(&clickhouse.Config{
+		Hosts:          "127.0.0.1:9000",
+		User:           "user",
+		Password:       "password",
+		DB:             "mydb",
+		MigrateEnabled: true,
+	}),
+	clickhouse.WithMigrations(migrations.FS),
 )
+if err != nil {
+	log.Fatalf("failed to initialize pool and run migrations: %v", err)
+}
+defer pool.Close()
+```
+<!-- @formatter:on -->
+
+
+Migrations run automatically on `NewPool` when `MigrateEnabled` is `true`.
+
+Migration files follow the standard `golang-migrate` naming format:
+
+```text
+000001_create_events.up.sql
+000001_create_events.down.sql
 ```
 
-Migrations are applied automatically on pool startup when `MigrateEnabled: true` is set in the config.
+### Additional Migration Arguments
 
-### Additional migration connection args
+Use the `CLICKHOUSE_MIGRATE_ARGS` environment variable or the `MigrateArgs` config field to inject custom parameters
+into the migration connection DSN.
 
-Set via `CLICKHOUSE_MIGRATE_ARGS` or the `MigrateArgs` config field:
+**Example values:**
 
-```
+```ini
+# Enable multiple statements per file and configure cluster settings
 x-multi-statement=true
 x-cluster-name=distributed_cluster
 x-migrations-table-engine=ReplicatedMergeTree
 ```
 
+## Observability
+
+`xclick` exposes ClickHouse connection pool metrics through Prometheus.
+
+<!-- @formatter:off -->
+```go
+pool, err := clickhouse.NewPool(
+	clickhouse.WithConfig(cfg),
+	clickhouse.WithClientID("analytics-service"),
+	clickhouse.WithMetricsNamespace("analytics"),
+)
+if err != nil {
+	log.Fatalf("failed to initialize observed ClickHouse pool: %v", err)
+}
+defer pool.Close()
+```
+<!-- @formatter:on -->
+
+
+The following metric labels are added automatically:
+
+| Label       | Description                                                        |
+|-------------|--------------------------------------------------------------------|
+| `client_id` | Generated client identifier or configured ID with a unique suffix. |
+| `db`        | Database name from the config.                                     |
+| `shard_id`  | Shard ID from the config.                                          |
+
+## Error handling
+
+`xclick` provides normalized ClickHouse error codes through `ConvertError`, so application code does not need to deal
+with raw driver errors directly.
+
+<!-- @formatter:off -->
+```go
+err := pool.QueryRow(ctx, "SELECT name FROM users WHERE id = ?", userID).Scan(&name)
+if err != nil {
+	chErr := clickhouse.ConvertError(err)
+
+	if chErr.Code() == clickhouse.ErrNoRowsClickhouse {
+		// handle missing row
+		return nil
+	}
+
+	return chErr
+}
+```
+<!-- @formatter:on -->
+
+
+Supported error categories include connection errors, no rows, and unknown errors.
+
 ## Configuration
 
-All parameters can be set via environment variables or directly in the `Config` struct.
+`Config` can be created directly as a Go struct.
 
-| ENV | Required | Default | Description |
-|-----|:--------:|:-------:|-------------|
-| `CLICKHOUSE_HOSTS` | ✓ | — | Comma-separated list of hosts: `host1:9000,host2:9000` |
-| `CLICKHOUSE_USER` | ✓ | — | Username |
-| `CLICKHOUSE_PASSWORD` | ✓ | — | Password |
-| `CLICKHOUSE_DB` | ✓ | — | Database name |
-| `CLICKHOUSE_SHARD_ID` | | `0` | Shard identifier |
-| `CLICKHOUSE_MAX_OPEN_CONNS` | | `32` | Max open connections |
-| `CLICKHOUSE_MAX_IDLE_CONNS` | | `8` | Max idle connections |
-| `CLICKHOUSE_CONN_MAX_LIFETIME` | | `1h` | Max connection lifetime |
-| `CLICKHOUSE_DIAL_TIMEOUT` | | `10s` | Connection dial timeout |
-| `CLICKHOUSE_READ_TIMEOUT` | | `10s` | Read timeout |
-| `CLICKHOUSE_CONN_OPEN_STRATEGY` | | `in_order` | Strategy: `in_order`, `round_robin`, `random` |
-| `CLICKHOUSE_BLOCK_BUFFER_SIZE` | | `2` | Block buffer size |
-| `CLICKHOUSE_MAX_COMPRESSION_BUFFER` | | `10 MiB` | Max compression buffer size |
-| `CLICKHOUSE_HTTP_HEADERS` | | — | Additional HTTP headers |
-| `CLICKHOUSE_HTTP_URL_PATH` | | — | Additional URL path for HTTP requests |
-| `CLICKHOUSE_DEBUG` | | `false` | Enable debug logging |
-| `CLICKHOUSE_FREE_BUFFER_ON_CONN_RELEASE` | | `false` | Free memory buffer after each query |
-| `CLICKHOUSE_INSECURE_SKIP_VERIFY` | | `false` | Skip TLS certificate verification |
-| `CLICKHOUSE_MIGRATE_ENABLED` | | `false` | Run migrations on startup |
-| `CLICKHOUSE_MIGRATE_ARGS` | | — | Extra connection string args for migrations |
+It also includes `envconfig` tags, so you can populate it from environment variables using your preferred configuration
+layer.
 
-## Client options
+### Config Struct
 
+<!-- @formatter:off -->
 ```go
-clickhouse.WithConfig(cfg)           // connection config
-clickhouse.WithClientID("name")      // client identifier, used in metrics labels
-clickhouse.WithMigrations(fs)        // embed.FS containing SQL migration files
-clickhouse.WithLogger(logger)        // custom slog.Logger
-clickhouse.WithTLS(tlsCfg)           // TLS configuration
-clickhouse.WithCompression(c)        // compression settings
-clickhouse.WithHTTPProxy(proxyURL)   // HTTP proxy
-clickhouse.WithMetricsNamespace(ns)  // Prometheus metrics namespace
+cfg := &clickhouse.Config{
+    Hosts:    "127.0.0.1:9000", // required
+    User:     "user",           // required
+    Password: "password",       // required
+    DB:       "mydb",           // required
+
+    MaxOpenConns:    32,
+    MaxIdleConns:    8,
+    ConnMaxLifetime: time.Hour,
+    DialTimeout:     10 * time.Second,
+    ReadTimeout:     10 * time.Second,
+
+    MigrateEnabled: true,
+}
 ```
+<!-- @formatter:on -->
+
+### Environment Variables
+
+| Variable | Required | Default | Description |
+| ---------------------------------------- | :------: | ---------- | ------------------------------------------------------------------- |
+| `CLICKHOUSE_HOSTS` | ✓ | — | Comma-separated list of hosts, for example `host1:9000,host2:9000`. |
+| `CLICKHOUSE_USER` | ✓ | — | Username. |
+| `CLICKHOUSE_PASSWORD` | ✓ | — | Password. |
+| `CLICKHOUSE_DB` | ✓ | — | Database name. |
+| `CLICKHOUSE_SHARD_ID` | | `0` | Shard ID exposed in metrics. |
+| `CLICKHOUSE_MAX_OPEN_CONNS` | | `32` | Maximum open connections. |
+| `CLICKHOUSE_MAX_IDLE_CONNS` | | `8` | Maximum idle connections. |
+| `CLICKHOUSE_CONN_MAX_LIFETIME` | | `1h` | Maximum connection lifetime. |
+| `CLICKHOUSE_DIAL_TIMEOUT` | | `10s` | Connection dial timeout. |
+| `CLICKHOUSE_READ_TIMEOUT` | | `10s` | Read timeout. |
+| `CLICKHOUSE_CONN_OPEN_STRATEGY` | | `in_order` | Connection open strategy: `in_order`, `round_robin`, or `random`. |
+| `CLICKHOUSE_BLOCK_BUFFER_SIZE` | | `2` | Block buffer size. |
+| `CLICKHOUSE_MAX_COMPRESSION_BUFFER` | | `10 MiB` | Maximum compression buffer size. |
+| `CLICKHOUSE_HTTP_HEADERS` | | — | Additional HTTP headers. |
+| `CLICKHOUSE_HTTP_URL_PATH` | | — | Additional URL path for HTTP requests. |
+| `CLICKHOUSE_SETTINGS` | | — | Additional ClickHouse settings. |
+| `CLICKHOUSE_DEBUG` | | `false` | Enable debug logging. |
+| `CLICKHOUSE_FREE_BUFFER_ON_CONN_RELEASE` | | `false` | Free memory buffer after each query. |
+| `CLICKHOUSE_INSECURE_SKIP_VERIFY` | | `false` | Skip TLS certificate verification. |
+| `CLICKHOUSE_MIGRATE_ENABLED` | | `false` | Run migrations on pool startup. |
+| `CLICKHOUSE_MIGRATE_ARGS` | | — | Extra connection string args for migrations. |
 
 ## License
 
-[MIT](LICENSE)
+This project is licensed under the [MIT License](LICENSE).

@@ -1,32 +1,3 @@
-# 0.1.8 (November 19, 2025)
+# 0.1.11 (Jun 22, 2026)
 
 * build: bump dependencies
-
-# 0.1.7 (October 17, 2025)
-
-* build: bump dependencies
-
-# 0.1.6 (August 16, 2025)
-
-* build: bump go version to 1.25
-
-# 0.1.5 (August 6, 2025)
-
-* build: bump dependencies
-
-# 0.1.4 (June 11, 2025)
-
-* build: bump dependencies
-
-# 0.1.3 (March 8, 2025)
-
-* build: bump go ver to 1.24
-* build: bump dependencies
-
-# 0.1.2 (January 16, 2025)
-
-* chore: rename module to xclick
-
-# 0.1.0 (December 09, 2024)
-
-* Add lib implementation
