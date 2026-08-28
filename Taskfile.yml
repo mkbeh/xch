@@ -1,28 +1,31 @@
-version: 3
+version: "3"
 
 vars:
-  LINTER_VER: "v2.12.2"
+  LINTER_VER: "v2.13.1"
 
 tasks:
   run:
-    desc: "Full cycle"
+    desc: "Run tests, race detection, and linters"
     deps:
+      - test-race
       - lint
 
-  lint:
-    desc: "lint"
+  test:
+    desc: "Run unit tests"
     cmds:
-      - docker run --rm
-        -u $(id -u):$(id -g)
-        -v {{.PWD}}:/app
-        -v {{.GOCACHE_ENV}}:/go/pkg/mod
-        -e GOCACHE=/go/pkg/mod
-        -e GOLANGCI_LINT_CACHE=/go/pkg/mod
+      - go test ./...
+
+  test-race:
+    desc: "Run unit tests with the race detector"
+    cmds:
+      - go test -race ./...
+
+  lint:
+    desc: "Run golangci-lint in Docker"
+    cmds:
+      - >-
+        docker run --rm
+        -v "{{.ROOT_DIR}}:/app"
         -w /app
         golangci/golangci-lint:{{.LINTER_VER}}
-        golangci-lint run --timeout 5m --fix --modules-download-mode vendor
-    vars:
-      GOCACHE_ENV:
-        sh: go env GOCACHE
-      PWD:
-        sh: pwd
+        golangci-lint run
