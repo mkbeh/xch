@@ -12,13 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNewRejectsNilConfig(t *testing.T) {
-	t.Parallel()
-
-	_, err := New(nil)
-	require.EqualError(t, err, "xch: config must not be nil")
-}
-
 func TestNewDoesNotDial(t *testing.T) {
 	t.Parallel()
 

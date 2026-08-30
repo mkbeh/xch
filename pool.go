@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"sync"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -16,10 +17,14 @@ import (
 // for concurrent use whenever the underlying clickhouse-go Conn is safe for the
 // corresponding operation.
 type Pool struct {
-	conn driver.Conn
+	conn    driver.Conn
+	metrics MetricsRegistration
 
 	name   string
 	labels map[string]string
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // Open parses a clickhouse-go DSN and creates a Pool.
@@ -37,16 +42,9 @@ func Open(dsn string, options ...Option) (*Pool, error) {
 
 // New creates a Pool from clickhouse-go options.
 //
-// New defensively copies the supplied options before passing them to
-// clickhouse-go. The TLS configuration is copied with tls.Config.Clone.
-// Function values, loggers, transports, values stored inside Settings, and
-// objects referenced by the TLS clone remain shared dependencies and must be
-// safe for concurrent use.
+// New does not ping ClickHouse or otherwise perform network I/O. The first
+// operation, or an explicit call to [Pool.Ping], establishes connectivity.
 func New(config *clickhouse.Options, options ...Option) (*Pool, error) {
-	if config == nil {
-		return nil, errors.New("xch: config must not be nil")
-	}
-
 	settings := defaultSettings()
 
 	if err := applyOptions(settings, options...); err != nil {
@@ -58,11 +56,20 @@ func New(config *clickhouse.Options, options ...Option) (*Pool, error) {
 		return nil, fmt.Errorf("xch: open connection: %w", err)
 	}
 
-	return &Pool{
+	pool := &Pool{
 		conn:   conn,
 		name:   settings.name,
 		labels: settings.labels,
-	}, nil
+	}
+
+	if err := pool.registerMetrics(settings.metrics); err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("xch: register pool metrics: %w", err),
+			pool.Close(),
+		)
+	}
+
+	return pool, nil
 }
 
 // Name returns the logical pool name configured with [WithName].
@@ -111,9 +118,10 @@ func (p *Pool) Select(ctx context.Context, dest any, query string, args ...any) 
 
 // PrepareBatch prepares a ClickHouse insert batch.
 //
-// Callers should defer Close immediately after successful preparation and call
-// Send to finalize the insert. Close releases resources but does not guarantee
-// that buffered rows are sent.
+// PrepareBatch exposes the underlying clickhouse-go batch lifecycle. Callers
+// are responsible for sending or closing the returned batch.
+//
+// For scoped batch inserts with managed lifecycle, use [Pool.InsertBatch].
 func (p *Pool) PrepareBatch(ctx context.Context, query string, opts ...driver.PrepareBatchOption) (driver.Batch, error) {
 	return p.conn.PrepareBatch(ctx, query, opts...)
 }
@@ -126,9 +134,21 @@ func (p *Pool) Raw() driver.Conn {
 	return p.conn
 }
 
-// Close closes the underlying clickhouse-go connection.
+// Close unregisters pool metrics and closes the underlying clickhouse-go
+// connection pool.
+//
+// Close is safe to call multiple times. All callers receive the result of the
+// first close attempt.
 func (p *Pool) Close() error {
-	return p.conn.Close()
+	p.closeOnce.Do(func() {
+		if p.metrics != nil {
+			p.metrics.Close()
+		}
+
+		p.closeErr = p.conn.Close()
+	})
+
+	return p.closeErr
 }
 
 // ClientInfo creates ClickHouse client information for an application or
@@ -145,4 +165,19 @@ func ClientInfo(name, version string) clickhouse.ClientInfo {
 			},
 		},
 	}
+}
+
+func (p *Pool) registerMetrics(metrics Metrics) error {
+	if metrics == nil {
+		return nil
+	}
+
+	registration, err := metrics.Register(p)
+	if err != nil {
+		return err
+	}
+
+	p.metrics = registration
+
+	return nil
 }

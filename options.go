@@ -21,8 +21,9 @@ func (option optionFunc) apply(settings *settings) error {
 }
 
 type settings struct {
-	name   string
-	labels map[string]string
+	name    string
+	labels  map[string]string
+	metrics Metrics
 }
 
 func defaultSettings() *settings {
@@ -91,6 +92,22 @@ func WithLabels(labels map[string]string) Option {
 
 			settings.labels[key] = value
 		}
+
+		return nil
+	})
+}
+
+// WithMetrics attaches one metrics implementation to the pool.
+//
+// Metrics are registered during New and unregistered automatically when the
+// Pool is closed.
+func WithMetrics(metrics Metrics) Option {
+	return optionFunc(func(settings *settings) error {
+		if metrics == nil {
+			return errors.New("pool metrics is nil")
+		}
+
+		settings.metrics = metrics
 
 		return nil
 	})
