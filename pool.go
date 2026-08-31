@@ -77,6 +77,12 @@ func (p *Pool) Name() string {
 	return p.name
 }
 
+// Label returns one pool label without allocating a copy of all labels.
+func (p *Pool) Label(key string) (string, bool) {
+	value, ok := p.labels[key]
+	return value, ok
+}
+
 // Labels returns a detached copy of the pool labels.
 func (p *Pool) Labels() map[string]string {
 	return maps.Clone(p.labels)
