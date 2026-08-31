@@ -1,0 +1,28 @@
+services:
+  clickhouse-shard-a:
+    image: clickhouse/clickhouse-server:latest-alpine
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ports:
+      - "58431:9000"
+    volumes:
+      - shard-a-data:/var/lib/clickhouse
+
+  clickhouse-shard-b:
+    image: clickhouse/clickhouse-server:latest-alpine
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ports:
+      - "58432:9000"
+    volumes:
+      - shard-b-data:/var/lib/clickhouse
+
+volumes:
+  shard-a-data:
+  shard-b-data:
