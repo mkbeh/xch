@@ -18,7 +18,7 @@ metrics.
 
 * **Pool Management:** Named connection pools with labels, statistics, lifecycle management, and access to the
   underlying `clickhouse-go` client.
-* **Native Query API:** Execute queries, read rows, and scan result sets using the native `clickhouse-go` query model.
+* **Native Query API:** Execute and scan queries using native `clickhouse-go` types.
 * **Managed Batch Inserts:** Scoped batch inserts with automatic send and cleanup.
 * **Error Handling:** Helpers for missing rows, ClickHouse exceptions, HTTP errors, and connection failures.
 * **Shard Routing:** Rendezvous, range, time-range, and custom routing with colocation checks, key grouping,
@@ -77,7 +77,7 @@ pool, err := xch.New(
 ```
 <!-- @formatter:on -->
 
-Multiple addresses in the same pool should represent interchangeable replicas of one logical ClickHouse shard.
+A pool may contain multiple replicas of the same logical ClickHouse shard.
 
 ### Batch Inserts
 
@@ -138,8 +138,7 @@ HTTP transport.
 The `topology/shard` package provides application-level routing across an immutable set of logical ClickHouse shards.
 Routing strategies live under `topology/shard/resolver`.
 
-Each shard is backed by one `xch.Pool`. A pool may contain multiple interchangeable replicas of the same logical shard,
-while different shard datasets must use separate pools.
+Each shard is backed by a single `xch.Pool`, which may contain multiple replicas of that shard.
 
 <!-- @formatter:off -->
 
