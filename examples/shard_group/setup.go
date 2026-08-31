@@ -1,0 +1,101 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"slices"
+
+	"github.com/mkbeh/xch"
+	"github.com/mkbeh/xch/topology/shard"
+)
+
+const (
+	defaultShardADSN = "clickhouse://clickhouse:clickhouse@localhost:58431/default?dial_timeout=5s"
+	defaultShardBDSN = "clickhouse://clickhouse:clickhouse@localhost:58432/default?dial_timeout=5s"
+
+	shardAID shard.ID = "shard-a"
+	shardBID shard.ID = "shard-b"
+)
+
+func openTopology(ctx context.Context) (*shard.Topology, error) {
+	configs := [...]struct {
+		id  shard.ID
+		env string
+		dsn string
+	}{
+		{
+			id:  shardAID,
+			env: "XCH_SHARD_A_DATABASE_URL",
+			dsn: defaultShardADSN,
+		},
+		{
+			id:  shardBID,
+			env: "XCH_SHARD_B_DATABASE_URL",
+			dsn: defaultShardBDSN,
+		},
+	}
+
+	pools := make([]*xch.Pool, 0, len(configs))
+
+	ownsPools := true
+	defer func() {
+		if ownsPools {
+			closePools(pools)
+		}
+	}()
+
+	for _, config := range configs {
+		pool, err := openShard(ctx, config.id, environment(config.env, config.dsn))
+		if err != nil {
+			return nil, fmt.Errorf("open shard %s: %w", config.id, err)
+		}
+
+		pools = append(pools, pool)
+	}
+
+	topology, err := shard.NewTopology(pools...)
+	if err != nil {
+		return nil, fmt.Errorf("create topology: %w", err)
+	}
+
+	ownsPools = false
+
+	return topology, nil
+}
+
+func openShard(
+	ctx context.Context,
+	id shard.ID,
+	dsn string,
+) (*xch.Pool, error) {
+	pool, err := xch.Open(
+		dsn,
+		xch.WithName(string(id)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("open pool: %w", err)
+	}
+
+	if err := pool.Ping(ctx); err != nil {
+		_ = pool.Close()
+
+		return nil, fmt.Errorf("ping pool: %w", err)
+	}
+
+	return pool, nil
+}
+
+func closePools(pools []*xch.Pool) {
+	for _, pool := range slices.Backward(pools) {
+		_ = pool.Close()
+	}
+}
+
+func environment(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+
+	return fallback
+}

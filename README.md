@@ -1,270 +1,373 @@
 <div align="center">
 
-# xclick
+# ClickHouse toolkit for Go
 
 **Lightweight ClickHouse wrapper for Go, built on top of [clickhouse-go](https://github.com/ClickHouse/clickhouse-go).**
 
-![Go Version](https://img.shields.io/badge/go-1.26%2B-blue)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Go Reference](https://pkg.go.dev/badge/github.com/mkbeh/xch.svg)](https://pkg.go.dev/github.com/mkbeh/xch)
+[![Test](https://github.com/mkbeh/xch/actions/workflows/test.yml/badge.svg)](https://github.com/mkbeh/xch/actions/workflows/test.yml)
+[![Coverage](https://codecov.io/gh/mkbeh/xch/graph/badge.svg)](https://codecov.io/gh/mkbeh/xch)
 
 </div>
 
-`xclick` wraps the excellent [`clickhouse-go`](https://github.com/ClickHouse/clickhouse-go) client with a compact API
-for common ClickHouse workflows: connection pool initialization, query building, embedded SQL migrations, normalized
-errors, TLS and compression options, and Prometheus metrics.
+`xch` is a lightweight wrapper around `clickhouse-go` that keeps its native types and query model while adding pool
+metadata and lifecycle management, managed batch inserts, error handling, shard routing, and optional OpenTelemetry
+metrics.
 
 ## Features
 
-* **Pool**: Simple ClickHouse connection pool initialization.
-* **Queries**: ClickHouse-friendly query builder support.
-* **Migrations**: Embedded SQL migrations via [golang-migrate](https://github.com/golang-migrate/migrate).
-* **Observability**: Prometheus connection pool metrics out of the box.
-* **Errors**: Normalized ClickHouse error codes for common failure cases.
-* **Security**: TLS configuration and insecure-skip-verify support.
-* **Configuration**: Configure via Go structs or environment variables.
+* **Pool Management:** Named connection pools with labels, statistics, lifecycle management, and access to the
+  underlying `clickhouse-go` client.
+* **Native Query API:** Execute and scan queries using native `clickhouse-go` types.
+* **Managed Batch Inserts:** Scoped batch inserts with automatic send and cleanup.
+* **Error Handling:** Helpers for missing rows, ClickHouse exceptions, HTTP errors, and connection failures.
+* **Shard Routing:** Rendezvous, range, time-range, and custom routing with colocation checks, key grouping,
+  partitioning, and bounded fan-out operations.
+* **Observability:** Client pool statistics with optional OpenTelemetry metrics integration.
 
 ## Installation
 
+This repository contains the core `xch` module. The core module is released from the repository root:
+
 ```bash
-go get github.com/mkbeh/xclick
+go get github.com/mkbeh/xch
 ```
 
-## Quick Start
+Optional integrations are released independently under `extra`:
 
-The example below creates a ClickHouse connection pool and runs a simple query.
+```bash
+go get github.com/mkbeh/xch/extra/otelxch
+```
+
+## Usage
+
+Open a pool from a ClickHouse DSN and use the native `clickhouse-go` query model:
 
 <!-- @formatter:off -->
 ```go
-package main
-
-import (
-	"context"
-	"fmt"
-	"log"
-
-	clickhouse "github.com/mkbeh/xclick"
-)
-
-func main() {
-	ctx := context.Background()
-
-	cfg := &clickhouse.Config{
-		Hosts:    "127.0.0.1:9000",
-		User:     "user",
-		Password: "password",
-		DB:       "mydb",
-	}
-
-	pool, err := clickhouse.NewPool(
-		clickhouse.WithConfig(cfg),
-		clickhouse.WithClientID("my-service"), // used in metric labels
-	)
-	if err != nil {
-		log.Fatalf("failed to init ClickHouse pool: %v", err)
-	}
-	defer pool.Close()
-
-	var result string
-	err = pool.QueryRow(ctx, "SELECT 'Hello, world!'").Scan(&result)
-	if err != nil {
-		log.Fatalf("query failed: %v", err)
-	}
-
-	fmt.Println(result)
-}
-```
-<!-- @formatter:on -->
-
-More examples: [examples/](https://github.com/mkbeh/xclick/tree/main/examples)
-
-## Query builder
-
-Each pool includes a preconfigured [squirrel](https://github.com/Masterminds/squirrel) statement builder.
-
-<!-- @formatter:off -->
-```go
-sql, args, err := pool.QueryBuilder().
-	Select("event_type", "count() AS total").
-	From("events").
-	Where(squirrel.Eq{"project_id": projectID}).
-	GroupBy("event_type").
-	ToSql()
-if err != nil {
-	log.Fatalf("failed to build query: %v", err)
-}
-
-rows, err := pool.Query(ctx, sql, args...)
-if err != nil {
-	log.Fatalf("failed to execute query: %v", err)
-}
-defer rows.Close()
-```
-<!-- @formatter:on -->
-
-## Migrations
-
-`xclick` supports embedded SQL migrations through [golang-migrate](https://github.com/golang-migrate/migrate).
-
-Create `embed.go` in your migrations package:
-
-```go
-package migrations
-
-import "embed"
-
-//go:embed *.sql
-var FS embed.FS
-```
-
-Pass the embedded filesystem via `WithMigrations`:
-
-<!-- @formatter:off -->
-```go
-pool, err := clickhouse.NewPool(
-	clickhouse.WithConfig(&clickhouse.Config{
-		Hosts:          "127.0.0.1:9000",
-		User:           "user",
-		Password:       "password",
-		DB:             "mydb",
-		MigrateEnabled: true,
-	}),
-	clickhouse.WithMigrations(migrations.FS),
+pool, err := xch.Open(
+    os.Getenv("XCH_DATABASE_URL"),
+    xch.WithName("example-pool"),
 )
 if err != nil {
-	log.Fatalf("failed to initialize pool and run migrations: %v", err)
+    return fmt.Errorf("open pool: %w", err)
 }
 defer pool.Close()
-```
-<!-- @formatter:on -->
 
-
-Migrations run automatically on `NewPool` when `MigrateEnabled` is `true`.
-
-Migration files follow the standard `golang-migrate` naming format:
-
-```text
-000001_create_events.up.sql
-000001_create_events.down.sql
-```
-
-### Additional Migration Arguments
-
-Use the `CLICKHOUSE_MIGRATE_ARGS` environment variable or the `MigrateArgs` config field to inject custom parameters
-into the migration connection DSN.
-
-**Example values:**
-
-```ini
-# Enable multiple statements per file and configure cluster settings
-x-multi-statement=true
-x-cluster-name=distributed_cluster
-x-migrations-table-engine=ReplicatedMergeTree
-```
-
-## Observability
-
-`xclick` exposes ClickHouse connection pool metrics through Prometheus.
-
-<!-- @formatter:off -->
-```go
-pool, err := clickhouse.NewPool(
-	clickhouse.WithConfig(cfg),
-	clickhouse.WithClientID("analytics-service"),
-	clickhouse.WithMetricsNamespace("analytics"),
-)
-if err != nil {
-	log.Fatalf("failed to initialize observed ClickHouse pool: %v", err)
+var message string
+if err := pool.QueryRow(ctx, "SELECT 'hello from xch'").Scan(&message); err != nil {
+    return fmt.Errorf("query: %w", err)
 }
-defer pool.Close()
+
+fmt.Println(message) // hello from xch
 ```
 <!-- @formatter:on -->
 
-
-The following metric labels are added automatically:
-
-| Label       | Description                                                        |
-|-------------|--------------------------------------------------------------------|
-| `client_id` | Generated client identifier or configured ID with a unique suffix. |
-| `db`        | Database name from the config.                                     |
-| `shard_id`  | Shard ID from the config.                                          |
-
-## Error handling
-
-`xclick` provides normalized ClickHouse error codes through `ConvertError`, so application code does not need to deal
-with raw driver errors directly.
+For full `clickhouse-go` configuration, create the pool from `clickhouse.Options`:
 
 <!-- @formatter:off -->
 ```go
+pool, err := xch.New(
+    &clickhouse.Options{
+        Addr:             []string{"clickhouse-1:9000", "clickhouse-2:9000"},
+        ConnOpenStrategy: clickhouse.ConnOpenRoundRobin,
+    },
+    xch.WithName("analytics"),
+)
+```
+<!-- @formatter:on -->
+
+A pool may contain multiple replicas of the same logical ClickHouse shard.
+
+### Batch Inserts
+
+`InsertBatch` manages the batch lifecycle and sends the batch when the callback completes successfully.
+
+<!-- @formatter:off -->
+```go
+err := pool.InsertBatch(
+    ctx,
+    "INSERT INTO users (id, name, active)",
+    func(batch xch.BatchWriter) error {
+        for _, user := range users {
+            if err := batch.Append(user.ID, user.Name, user.Active); err != nil {
+                return err
+            }
+        }
+
+        return nil
+    },
+)
+```
+<!-- @formatter:on -->
+
+If the callback returns an error, the batch is closed without being sent. Use `PrepareBatch` directly when full control
+over the native `clickhouse-go` batch lifecycle is required.
+
+### Error Handling
+
+`xch` provides helpers for classifying common ClickHouse and transport errors while preserving the original error chain.
+
+<!-- @formatter:off -->
+```go
+var name string
 err := pool.QueryRow(ctx, "SELECT name FROM users WHERE id = ?", userID).Scan(&name)
-if err != nil {
-	chErr := clickhouse.ConvertError(err)
 
-	if chErr.Code() == clickhouse.ErrNoRowsClickhouse {
-		// handle missing row
-		return nil
-	}
+switch {
+case xch.IsNoRows(err):
+    // Handle a missing row.
 
-	return chErr
+case xch.IsConnectionError(err):
+    // Handle a connection failure.
+
+case err != nil:
+    if code, ok := xch.ExceptionCode(err); ok {
+        log.Printf("ClickHouse exception %d", code)
+    }
+
+    return err
 }
 ```
 <!-- @formatter:on -->
 
+`Exception` and `ExceptionCode` expose native ClickHouse exceptions, while `HTTPError` extracts errors returned by the
+HTTP transport.
 
-Supported error categories include connection errors, no rows, and unknown errors.
+## Sharding
 
-## Configuration
+The `topology/shard` package provides application-level routing across an immutable set of logical ClickHouse shards.
+Routing strategies live under `topology/shard/resolver`.
 
-`Config` can be created directly as a Go struct.
-
-It also includes `envconfig` tags, so you can populate it from environment variables using your preferred configuration
-layer.
-
-### Config Struct
+Each shard is backed by a single `xch.Pool`, which may contain multiple replicas of that shard.
 
 <!-- @formatter:off -->
+
 ```go
-cfg := &clickhouse.Config{
-    Hosts:    "127.0.0.1:9000", // required
-    User:     "user",           // required
-    Password: "password",       // required
-    DB:       "mydb",           // required
+shardA, err := xch.Open(
+    shardADSN,
+    xch.WithName("shard-a"),
+)
+if err != nil {
+	panic(err)
+}
 
-    MaxOpenConns:    32,
-    MaxIdleConns:    8,
-    ConnMaxLifetime: time.Hour,
-    DialTimeout:     10 * time.Second,
-    ReadTimeout:     10 * time.Second,
+shardB, err := xch.Open(
+    shardBDSN,
+    xch.WithName("shard-b"),
+)
+if err != nil {
+	panic(err)
+}
 
-    MigrateEnabled: true,
+topology, err := shard.NewTopology(shardA, shardB)
+if err != nil {
+	panic(err)
+}
+
+defer topology.Close()
+
+userResolver, _ := resolver.NewRange(
+    topology,
+    []resolver.Range[uint64]{
+        {Start: 0, End: 100, ShardID: "shard-a"},
+        {Start: 100, End: 200, ShardID: "shard-b"},
+    },
+)
+
+// Resolve the physical shard for the user.
+target, err := userResolver.Resolve(userID)
+if err != nil {
+	panic(err)
+}
+
+// Execute the operation directly on the resolved shard.
+err = target.Pool().Exec(ctx, "INSERT INTO users (id, name) VALUES (?, ?)", userID, name)
+if err != nil {
+	panic(err)
 }
 ```
+
 <!-- @formatter:on -->
 
-### Environment Variables
+After successful construction, the topology owns its pools and closes them when `Topology.Close` is called.
 
-| Variable | Required | Default | Description |
-| ---------------------------------------- | :------: | ---------- | ------------------------------------------------------------------- |
-| `CLICKHOUSE_HOSTS` | ✓ | — | Comma-separated list of hosts, for example `host1:9000,host2:9000`. |
-| `CLICKHOUSE_USER` | ✓ | — | Username. |
-| `CLICKHOUSE_PASSWORD` | ✓ | — | Password. |
-| `CLICKHOUSE_DB` | ✓ | — | Database name. |
-| `CLICKHOUSE_SHARD_ID` | | `0` | Shard ID exposed in metrics. |
-| `CLICKHOUSE_MAX_OPEN_CONNS` | | `32` | Maximum open connections. |
-| `CLICKHOUSE_MAX_IDLE_CONNS` | | `8` | Maximum idle connections. |
-| `CLICKHOUSE_CONN_MAX_LIFETIME` | | `1h` | Maximum connection lifetime. |
-| `CLICKHOUSE_DIAL_TIMEOUT` | | `10s` | Connection dial timeout. |
-| `CLICKHOUSE_READ_TIMEOUT` | | `10s` | Read timeout. |
-| `CLICKHOUSE_CONN_OPEN_STRATEGY` | | `in_order` | Connection open strategy: `in_order`, `round_robin`, or `random`. |
-| `CLICKHOUSE_BLOCK_BUFFER_SIZE` | | `2` | Block buffer size. |
-| `CLICKHOUSE_MAX_COMPRESSION_BUFFER` | | `10 MiB` | Maximum compression buffer size. |
-| `CLICKHOUSE_HTTP_HEADERS` | | — | Additional HTTP headers. |
-| `CLICKHOUSE_HTTP_URL_PATH` | | — | Additional URL path for HTTP requests. |
-| `CLICKHOUSE_SETTINGS` | | — | Additional ClickHouse settings. |
-| `CLICKHOUSE_DEBUG` | | `false` | Enable debug logging. |
-| `CLICKHOUSE_FREE_BUFFER_ON_CONN_RELEASE` | | `false` | Free memory buffer after each query. |
-| `CLICKHOUSE_INSECURE_SKIP_VERIFY` | | `false` | Skip TLS certificate verification. |
-| `CLICKHOUSE_MIGRATE_ENABLED` | | `false` | Run migrations on pool startup. |
-| `CLICKHOUSE_MIGRATE_ARGS` | | — | Extra connection string args for migrations. |
+### Routing Strategies
+
+Resolvers bind a placement strategy to an immutable shard topology. Every resolver implements the same `Resolve`
+contract.
+
+| Resolver             | Best Suited For                       | Routing Model                                                         |
+| :------------------- | :------------------------------------ | :-------------------------------------------------------------------- |
+| `RendezvousResolver` | Keys without natural ranges           | Deterministic Highest Random Weight (HRW) hashing within a namespace. |
+| `RangeResolver`      | Ordered numeric or string keys        | Bounded, non-overlapping half-open intervals `[Start, End)`.          |
+| `TimeRangeResolver`  | Time-series or partitioned event data | Bounded chronological intervals normalized to UTC.                    |
+| `CustomResolver`     | Domain-specific placement rules       | Application-defined mapping from a key to `shard.ID`.                 |
+
+<!-- @formatter:off -->
+
+```go
+// Rendezvous hashing distributes arbitrary keys deterministically.
+usersByHash, _ := resolver.NewRendezvous(topology, "users", resolver.Uint64KeyEncoder())
+
+// Ordered ranges provide explicit control over the keyspace.
+usersByRange, _ := resolver.NewRange(
+    topology,
+    []resolver.Range[uint64]{
+        {Start: 0, End: 100, ShardID: "shard-a"},
+        {Start: 100, End: 200, ShardID: "shard-b"},
+    },
+)
+
+// Time ranges route records through bounded chronological intervals.
+eventsByTime, _ := resolver.NewTimeRange(
+    topology,
+    []resolver.TimeRange{
+        {Start: start2025, End: start2026, ShardID: "shard-a"},
+        {Start: start2026, End: start2027, ShardID: "shard-b"},
+    },
+)
+
+// Custom routing keeps domain-specific placement rules in application code.
+tenantsByRegion, _ := resolver.NewCustom(
+    topology,
+    func(region string) (shard.ID, error) {
+        switch region {
+        case "eu":
+            return "shard-a", nil
+        case "us":
+            return "shard-b", nil
+        default:
+            return "", shard.ErrNoShard
+        }
+    },
+)
+```
+
+<!-- @formatter:on -->
+
+Regardless of the selected strategy, routing uses the same contract:
+
+<!-- @formatter:off -->
+
+```go
+target, _ := usersByHash.Resolve(userID)
+log.Printf("resolved shard: %s", target.ID())
+```
+
+<!-- @formatter:on -->
+
+Range and time-range resolvers may contain intentional gaps in the configured keyspace. Keys that do not match any
+configured range return `ErrNoShard`.
+
+> [!IMPORTANT]
+> For rendezvous routing, the namespace, key encoding, and stable shard IDs are part of the persistent placement
+contract.
+
+### Multi-Key Routing
+
+For batch workloads, `xch` provides routing primitives for analyzing, grouping, and partitioning keys across the
+topology.
+
+**Strict Colocation**
+
+`SameShard` verifies that all keys resolve to the same shard before an operation that must remain colocated.
+
+<!-- @formatter:off -->
+
+```go
+target, err := shard.SameShard(userResolver, 42, 43)
+if err != nil {
+	panic(err)
+}
+
+log.Printf("resolved shard: %s", target.ID())
+```
+
+<!-- @formatter:on -->
+
+**Strict Grouping**
+
+`GroupByShard` groups keys by destination shard and fails if any key cannot be resolved.
+
+<!-- @formatter:off -->
+
+```go
+keys := []uint64{42, 142, 43, 143}
+
+groups, err := shard.GroupByShard(userResolver, keys)
+if err != nil {
+	panic(err)
+}
+
+for _, group := range groups {
+    log.Printf("process shard=%s user_ids=%v", group.Shard.ID(), group.Keys)
+}
+```
+
+<!-- @formatter:on -->
+
+**Tolerant Partitioning**
+
+`PartitionByShard` groups routable keys by shard while collecting keys that do not resolve to any shard separately.
+
+<!-- @formatter:off -->
+
+```go
+keys := []uint64{42, 142, 250, 43, 143}
+
+partition, err := shard.PartitionByShard(userResolver, keys)
+if err != nil {
+    panic(err)
+}
+
+for _, group := range partition.Groups {
+    log.Printf("process shard=%s user_ids=%v", group.Shard.ID(), group.Keys)
+}
+
+if len(partition.Unresolved) != 0 {
+    log.Printf("unresolved keys: %v", partition.Unresolved)
+}
+```
+
+<!-- @formatter:on -->
+
+### Fan-Out Operations
+
+`ForEachShard` executes an operation across the entire topology with bounded concurrency. Setting the concurrency to `1`
+makes execution sequential.
+
+<!-- @formatter:off -->
+
+```go
+const maxConcurrency = 4
+
+results, err := topology.ForEachShard(
+    ctx,
+    maxConcurrency,
+    func(ctx context.Context, target shard.Shard) error {
+        return target.Pool().Exec(ctx, "OPTIMIZE TABLE events FINAL")
+    },
+)
+if err != nil {
+    log.Printf("fan-out completed with errors: %v", err)
+}
+
+// Inspect individual shard failures when detailed handling is required.
+for _, result := range results {
+    if result.Err != nil {
+        log.Printf("shard=%s failed: %v", result.ShardID, result.Err)
+    }
+}
+```
+
+<!-- @formatter:on -->
+
+Results preserve topology registration order and retain individual shard failures, while the returned error aggregates
+callback and context cancellation errors.
+
+## Examples
+
+See the [examples](examples) directory for runnable examples covering the main `xch` usage patterns.
 
 ## License
 

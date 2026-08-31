@@ -1,1 +1,0 @@
-DROP TABLE IF EXISTS tasks ON CLUSTER '{cluster}';
